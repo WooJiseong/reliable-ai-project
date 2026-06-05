@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "compare-noise-wave-mel"
+version = "0.1.0"
+description = "Conformer-CTC and PGD attack code for multilingual ASR robustness experiments"
+requires-python = ">=3.8"
+dependencies = [
+  "torch==2.7.1",
+  "torchaudio==2.7.1",
+  "datasets>=2.18,<5.0",
+  "transformers>=4.40,<5.0",
+  "accelerate>=0.29,<2.0",
+  "sentencepiece>=0.2,<0.3",
+  "soundfile>=0.12,<0.14",
+  "librosa>=0.10.1,<0.12",
+  "tqdm>=4.66,<5.0",
+  "numpy>=1.26,<3.0",
+  "pyarrow>=14,<22",
+]
+
+[project.optional-dependencies]
+nemo = [
+  "nemo_toolkit[asr]>=2.0,<3.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

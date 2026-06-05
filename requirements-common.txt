@@ -1,0 +1,12 @@
+# Shared dependencies for ReliableAI_team_project and CompareNoiseWaveMel.
+# Install torch/torchaudio first with scripts/create_venv.sh so the CPU/CUDA
+# wheel index is explicit and torch and torchaudio stay ABI-compatible.
+datasets>=2.18,<5.0
+transformers>=4.40,<5.0
+accelerate>=0.29,<2.0
+sentencepiece>=0.2,<0.3
+soundfile>=0.12,<0.14
+librosa>=0.10.1,<0.12
+tqdm>=4.66,<5.0
+numpy>=1.26,<3.0
+pyarrow>=14,<22

@@ -1,0 +1,4 @@
+# Optional dependency set for pretrained NVIDIA NeMo Conformer-CTC evaluation.
+# Install after the base environment is active:
+#   python -m pip install -r requirements-nemo.txt
+nemo_toolkit[asr]>=2.0,<3.0

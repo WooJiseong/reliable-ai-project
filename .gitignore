@@ -1,0 +1,49 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+miniconda3/
+
+# IDE/editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local environment files
+.env
+.env.*
+
+# Datasets and generated manifests/audio
+data/
+ReliableAI_team_project/data/
+CompareNoiseWaveMel/data/
+
+# Experiment outputs and model checkpoints
+runs/
+CompareNoiseWaveMel/runs/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# Generated reports/results
+*.jsonl
+*.csv
+
+# Packaging/build artifacts
+build/
+dist/
+*.egg-info/

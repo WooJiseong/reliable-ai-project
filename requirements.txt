@@ -1,0 +1,10 @@
+# Workspace-level environment file.
+# For a full reproducible setup, prefer:
+#   bash scripts/create_venv.sh cpu
+#
+# Direct pip use is also possible after installing torch/torchaudio separately:
+#   python -m pip install torch==2.7.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cpu
+#   python -m pip install -r requirements.txt
+-r requirements-common.txt
+torch==2.7.1
+torchaudio==2.7.1
