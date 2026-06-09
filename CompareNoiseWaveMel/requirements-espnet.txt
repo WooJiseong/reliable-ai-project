@@ -1,0 +1,5 @@
+# Optional dependency set for ESPnet OWSM-CTC evaluation.
+# Install after the base environment is active:
+#   python -m pip install -r requirements-espnet.txt
+espnet>=202412
+espnet_model_zoo>=0.1.7

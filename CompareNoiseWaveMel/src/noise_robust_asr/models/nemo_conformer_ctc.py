@@ -6,6 +6,14 @@ import torch
 from torch import nn
 
 
+PROJECT_LANGUAGE_CANDIDATES = {
+    "en": ("en", "eng", "en_us", "en-US"),
+    "ko": ("ko", "kor", "ko_kr", "ko-KR"),
+    "zh": ("zh", "cmn", "cmn_hans_cn", "zh_cn", "zh-CN"),
+    "ru": ("ru", "rus", "ru_ru", "ru-RU"),
+}
+
+
 class NemoConformerCTC(nn.Module):
     def __init__(self, pretrained_model: str, freeze: bool = True):
         super().__init__()
@@ -76,11 +84,17 @@ class NemoConformerCTC(nn.Module):
             log_probs = first
         return log_probs, encoded_lengths
 
-    def encode_text(self, text: str) -> torch.Tensor:
+    def encode_text(self, text: str, language: str | None = None) -> torch.Tensor:
         normalized = text.strip().lower()
         tokenizer = getattr(self.model, "tokenizer", None)
         if tokenizer is not None:
-            token_ids = tokenizer.text_to_ids(normalized)
+            if self._requires_language_id(tokenizer):
+                token_ids = tokenizer.text_to_ids(
+                    normalized,
+                    self.resolve_tokenizer_language(language),
+                )
+            else:
+                token_ids = tokenizer.text_to_ids(normalized)
             return torch.tensor(token_ids, dtype=torch.long)
 
         vocabulary = getattr(self._ctc_decoder(), "vocabulary", None)
@@ -90,6 +104,61 @@ class NemoConformerCTC(nn.Module):
         token_to_id = {token: idx for idx, token in enumerate(vocabulary)}
         token_ids = [token_to_id[token] for token in normalized if token in token_to_id]
         return torch.tensor(token_ids, dtype=torch.long)
+
+    def resolve_tokenizer_language(self, language: str | None) -> str:
+        if language is None:
+            raise ValueError(
+                f"{self.pretrained_model} uses an aggregate tokenizer and requires a language id."
+            )
+
+        tokenizer = getattr(self.model, "tokenizer", None)
+        supported = self._supported_tokenizer_languages(tokenizer)
+        if not supported:
+            return language
+
+        candidates = PROJECT_LANGUAGE_CANDIDATES.get(language, (language,))
+        for candidate in candidates:
+            if candidate in supported:
+                return candidate
+
+        normalized_supported = {
+            item.lower().replace("-", "_"): item for item in supported
+        }
+        for candidate in candidates:
+            normalized = candidate.lower().replace("-", "_")
+            if normalized in normalized_supported:
+                return normalized_supported[normalized]
+
+        raise ValueError(
+            f"Could not map project language {language!r} to a tokenizer language for "
+            f"{self.pretrained_model}. Available tokenizer languages: {supported}"
+        )
+
+    def supported_project_languages(self, languages: List[str]) -> List[str]:
+        supported_languages = []
+        for language in languages:
+            try:
+                self.resolve_tokenizer_language(language)
+            except ValueError:
+                continue
+            supported_languages.append(language)
+        return supported_languages
+
+    @staticmethod
+    def _requires_language_id(tokenizer) -> bool:
+        return hasattr(tokenizer, "tokenizers_dict") or hasattr(tokenizer, "langs")
+
+    @staticmethod
+    def _supported_tokenizer_languages(tokenizer) -> List[str]:
+        if tokenizer is None:
+            return []
+        languages = getattr(tokenizer, "langs", None)
+        if languages is not None:
+            return list(languages)
+        tokenizers_dict = getattr(tokenizer, "tokenizers_dict", None)
+        if tokenizers_dict is not None:
+            return list(tokenizers_dict.keys())
+        return []
 
     def decode_log_probs(self, log_probs: torch.Tensor, encoded_lengths: torch.Tensor) -> List[str]:
         predictions = log_probs.argmax(dim=-1)

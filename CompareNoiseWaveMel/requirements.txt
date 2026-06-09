@@ -12,3 +12,6 @@ librosa>=0.10.1,<0.12
 tqdm>=4.66,<5.0
 numpy>=1.26,<3.0
 pyarrow>=14,<22
+phonemizer>=3.3,<4
+jieba>=0.42,<0.43
+espeakng-loader>=0.2.4,<0.3; platform_system == "Linux"

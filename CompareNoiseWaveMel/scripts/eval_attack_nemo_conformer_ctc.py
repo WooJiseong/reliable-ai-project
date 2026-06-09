@@ -14,28 +14,40 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from noise_robust_asr.attacks.pgd import pgd_attack
 from noise_robust_asr.data import TARGET_SAMPLE_RATE, read_manifest
-from noise_robust_asr.metrics import cer, summarize_by_language, wer
+from noise_robust_asr.metrics import PhonemeMetric, cer, summarize_by_language, wer
 from noise_robust_asr.models.nemo_conformer_ctc import NemoConformerCTC
 
 
 class NemoSpeechManifestDataset(Dataset):
-    def __init__(self, manifest_path, model: NemoConformerCTC):
+    def __init__(self, manifest_path, model: NemoConformerCTC, languages=None):
+        self.manifest_path = Path(manifest_path).resolve()
+        self.manifest_dir = self.manifest_path.parent
         self.items = read_manifest(manifest_path)
+        if languages:
+            languages = set(languages)
+            self.items = [item for item in self.items if item["language"] in languages]
         self.model = model
 
     def __len__(self):
         return len(self.items)
 
+    def _resolve_audio_path(self, audio_path: str) -> Path:
+        path = Path(audio_path)
+        if path.is_absolute():
+            return path
+        return self.manifest_dir / path
+
     def __getitem__(self, idx):
         import torchaudio
 
         item = self.items[idx]
-        waveform, sample_rate = torchaudio.load(item["audio"])
+        audio_path = self._resolve_audio_path(item["audio"])
+        waveform, sample_rate = torchaudio.load(str(audio_path))
         waveform = waveform.mean(dim=0)
         if sample_rate != TARGET_SAMPLE_RATE:
             waveform = torchaudio.functional.resample(waveform, sample_rate, TARGET_SAMPLE_RATE)
         waveform = waveform.clamp(-1.0, 1.0)
-        tokens = self.model.encode_text(item["text"])
+        tokens = self.model.encode_text(item["text"], item["language"])
         return {
             "waveform": waveform,
             "waveform_length": torch.tensor(waveform.numel(), dtype=torch.long),
@@ -43,7 +55,7 @@ class NemoSpeechManifestDataset(Dataset):
             "token_length": torch.tensor(tokens.numel(), dtype=torch.long),
             "text": item["text"],
             "language": item["language"],
-            "audio": item["audio"],
+            "audio": str(audio_path),
         }
 
 
@@ -63,6 +75,11 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--output-csv", required=True)
+    parser.add_argument(
+        "--output-jsonl",
+        default=None,
+        help="Optional ReliableAI_team_project-compatible JSONL output path.",
+    )
     parser.add_argument("--pretrained-model", default="nvidia/stt_en_conformer_ctc_small")
     parser.add_argument("--finetuned-checkpoint", default=None)
     parser.add_argument("--batch-size", type=int, default=1)
@@ -73,11 +90,74 @@ def parse_args():
     parser.add_argument("--alpha", type=float, default=0.001)
     parser.add_argument("--limit", type=int, default=None, help="Evaluate only the first N samples.")
     parser.add_argument(
+        "--languages",
+        nargs="+",
+        default=None,
+        help="Optional project language tags to evaluate from the manifest, e.g. en ru.",
+    )
+    parser.add_argument("--phonemizer-backend", default="espeak")
+    parser.add_argument(
+        "--phonemizer-language-map",
+        default=None,
+        help="JSON object or JSON file mapping project language tags to phonemizer language codes.",
+    )
+    parser.add_argument(
+        "--disable-phoneme-metric",
+        action="store_true",
+        help="Skip phonemizer PER columns. Use only for legacy/debug runs.",
+    )
+    parser.add_argument(
         "--random-start",
         action="store_true",
         help="Enable random PGD initialization. Disabled by default to match ReliableAI_team_project.",
     )
     return parser.parse_args()
+
+
+def load_language_map(value):
+    if value is None:
+        return None
+    path = Path(value)
+    if path.exists():
+        return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(value)
+
+
+def resolve_device(requested: str) -> str:
+    if requested == "auto":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    if requested.startswith("cuda") and not torch.cuda.is_available():
+        print(
+            "Requested CUDA, but this PyTorch process cannot see a CUDA device; using CPU.",
+            flush=True,
+        )
+        return "cpu"
+    return requested
+
+
+def manifest_languages(manifest_path: str) -> list[str]:
+    return sorted({item["language"] for item in read_manifest(manifest_path)})
+
+
+def validate_tokenizer_languages(model: NemoConformerCTC, languages: list[str]) -> None:
+    unsupported = [
+        language
+        for language in languages
+        if language not in model.supported_project_languages([language])
+    ]
+    if not unsupported:
+        return
+
+    tokenizer = getattr(model.model, "tokenizer", None)
+    available = model._supported_tokenizer_languages(tokenizer)
+    supported_project = model.supported_project_languages(languages)
+    raise ValueError(
+        f"{model.pretrained_model} cannot encode CTC targets for project languages "
+        f"{unsupported}. Tokenizer languages available in this checkpoint: {available}. "
+        f"Supported project languages in this manifest: {supported_project}. "
+        "Use --languages with only supported languages for this checkpoint, or choose a "
+        "checkpoint/tokenizer that supports the full project language set."
+    )
 
 
 def move_batch(batch, device):
@@ -95,13 +175,27 @@ def decode_batch(model: NemoConformerCTC, batch):
 
 def main():
     args = parse_args()
+    args.device = resolve_device(args.device)
+    phoneme_metric = None
+    if not args.disable_phoneme_metric:
+        phoneme_metric = PhonemeMetric(
+            backend=args.phonemizer_backend,
+            language_map=load_language_map(args.phonemizer_language_map),
+        )
     model = NemoConformerCTC(args.pretrained_model).to(args.device)
     if args.finetuned_checkpoint is not None:
         checkpoint = torch.load(args.finetuned_checkpoint, map_location=args.device)
         model.load_state_dict(checkpoint["model_state"])
     model.eval()
 
-    dataset = NemoSpeechManifestDataset(args.manifest, model)
+    selected_languages = args.languages or manifest_languages(args.manifest)
+    validate_tokenizer_languages(model, selected_languages)
+
+    dataset = NemoSpeechManifestDataset(args.manifest, model, languages=selected_languages)
+    if len(dataset) == 0:
+        raise ValueError(
+            f"No manifest rows found for requested languages: {selected_languages}"
+        )
     if args.limit is not None:
         if args.limit < 1:
             raise ValueError("--limit must be positive when provided")
@@ -134,32 +228,45 @@ def main():
         attacked_hyps = decode_batch(model, attacked_batch)
 
         for idx, (ref, clean_hyp, attacked_hyp) in enumerate(zip(batch["text"], clean_hyps, attacked_hyps)):
-            clean_wer = wer(ref, clean_hyp)
-            attacked_wer = wer(ref, attacked_hyp)
+            language = batch["language"][idx]
+            clean_wer = wer(ref, clean_hyp, language)
+            attacked_wer = wer(ref, attacked_hyp, language)
             clean_cer = cer(ref, clean_hyp)
             attacked_cer = cer(ref, attacked_hyp)
-            rows.append(
-                {
-                    "audio": batch["audio"][idx],
-                    "language": batch["language"][idx],
-                    "reference": ref,
-                    "clean_prediction": clean_hyp,
-                    "attacked_prediction": attacked_hyp,
-                    "clean_wer": clean_wer,
-                    "attacked_wer": attacked_wer,
-                    "wer_degradation": attacked_wer - clean_wer,
-                    "clean_cer": clean_cer,
-                    "attacked_cer": attacked_cer,
-                    "cer_degradation": attacked_cer - clean_cer,
-                    "pgd_steps": args.pgd_steps,
-                    "epsilon": args.epsilon,
-                    "alpha": args.alpha,
-                    "random_start": args.random_start,
-                    "model_family": "nemo_conformer_ctc",
-                    "pretrained_model": args.pretrained_model,
-                    "finetuned_checkpoint": args.finetuned_checkpoint or "",
-                }
-            )
+            row = {
+                "audio": batch["audio"][idx],
+                "language": language,
+                "reference": ref,
+                "clean_prediction": clean_hyp,
+                "attacked_prediction": attacked_hyp,
+                "clean_wer": clean_wer,
+                "attacked_wer": attacked_wer,
+                "wer_degradation": attacked_wer - clean_wer,
+                "clean_cer": clean_cer,
+                "attacked_cer": attacked_cer,
+                "cer_degradation": attacked_cer - clean_cer,
+                "pgd_steps": args.pgd_steps,
+                "epsilon": args.epsilon,
+                "alpha": args.alpha,
+                "random_start": args.random_start,
+                "model_family": "nemo_conformer_ctc",
+                "pretrained_model": args.pretrained_model,
+                "finetuned_checkpoint": args.finetuned_checkpoint or "",
+            }
+            if phoneme_metric is not None:
+                clean_per = phoneme_metric.per(ref, clean_hyp, language)
+                attacked_per = phoneme_metric.per(ref, attacked_hyp, language)
+                row.update(
+                    {
+                        "reference_phonemes": phoneme_metric.phonemize_text(ref, language),
+                        "clean_prediction_phonemes": phoneme_metric.phonemize_text(clean_hyp, language),
+                        "attacked_prediction_phonemes": phoneme_metric.phonemize_text(attacked_hyp, language),
+                        "clean_per": clean_per,
+                        "attacked_per": attacked_per,
+                        "per_degradation": attacked_per - clean_per,
+                    }
+                )
+            rows.append(row)
 
     output_csv = Path(args.output_csv)
     output_csv.parent.mkdir(parents=True, exist_ok=True)
@@ -175,6 +282,12 @@ def main():
         "clean_cer",
         "attacked_cer",
         "cer_degradation",
+        "reference_phonemes",
+        "clean_prediction_phonemes",
+        "attacked_prediction_phonemes",
+        "clean_per",
+        "attacked_per",
+        "per_degradation",
         "pgd_steps",
         "epsilon",
         "alpha",
@@ -187,6 +300,36 @@ def main():
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+
+    if args.output_jsonl:
+        output_jsonl = Path(args.output_jsonl)
+        output_jsonl.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_jsonl, "w", encoding="utf-8") as f:
+            for row in rows:
+                item = {
+                    "lang_tag": row["language"],
+                    "ground_truth": row["reference"],
+                    "clean_pred": row["clean_prediction"],
+                    "adv_pred": row["attacked_prediction"],
+                    "model_family": row["model_family"],
+                    "clean_wer": row["clean_wer"],
+                    "attacked_wer": row["attacked_wer"],
+                    "clean_cer": row["clean_cer"],
+                    "attacked_cer": row["attacked_cer"],
+                    "pretrained_model": row["pretrained_model"],
+                }
+                if "clean_per" in row:
+                    item.update(
+                        {
+                            "reference_phonemes": row["reference_phonemes"],
+                            "clean_pred_phonemes": row["clean_prediction_phonemes"],
+                            "adv_pred_phonemes": row["attacked_prediction_phonemes"],
+                            "clean_per": row["clean_per"],
+                            "attacked_per": row["attacked_per"],
+                            "per_degradation": row["per_degradation"],
+                        }
+                    )
+                f.write(json.dumps(item, ensure_ascii=False) + "\n")
 
     summary = summarize_by_language(rows)
     print(json.dumps(summary, ensure_ascii=False, indent=2))

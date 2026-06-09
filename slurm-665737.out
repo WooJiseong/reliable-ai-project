@@ -1,0 +1,1 @@
+Error: [Errno 13] Permission denied: '/var/spool/slurmd/.venv'

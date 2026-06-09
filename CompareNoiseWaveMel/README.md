@@ -6,7 +6,7 @@ This repository contains the Mel-Spectrogram ASR side for multilingual noise-att
 - Input to attack: raw waveform
 - Model frontend: differentiable log-Mel spectrogram
 - Attack: untargeted PGD-5 on waveform
-- Evaluation: language-wise WER/CER degradation and robustness gap
+- Evaluation: language-wise phonemizer PER degradation and robustness gap, with WER/CER retained as secondary diagnostics
 
 ## Manifest Format
 
@@ -75,7 +75,12 @@ fixed and treat the ASR model family as the main independent variable:
 | L-infinity epsilon | `0.005` |
 | PGD alpha | `0.001` |
 | Random start | `false` |
-| Metrics | WER, CER, attacked-clean degradation |
+| Primary metric | Phonemizer PER, attacked-clean degradation |
+| Secondary metrics | WER, CER |
+
+The phoneme metric uses the Python `phonemizer` package with the eSpeak backend.
+Install the Python dependency in the shared venv and make sure `espeak` or
+`espeak-ng` is available on `PATH`.
 
 ## Train Conformer-CTC
 
@@ -107,12 +112,19 @@ The default attack parameters are intentionally aligned with
 `--alpha 0.001`, and no random start. Pass `--random-start` only for an
 additional ablation, not for the controlled Wav-vs-Mel comparison.
 
+The script writes:
+
+- `runs/conformer_ctc/pgd5_eval.csv`
+- optional ReliableAI-compatible JSONL when `--output-jsonl` is passed
+
 The script prints language-level metrics:
 
 - `clean_wer`, `attacked_wer`, `wer_degradation`
 - `clean_cer`, `attacked_cer`, `cer_degradation`
+- `clean_per`, `attacked_per`, `per_degradation`
 - `wer_robustness_gap = max(wer_degradation) - min(wer_degradation)`
 - `cer_robustness_gap = max(cer_degradation) - min(cer_degradation)`
+- `per_robustness_gap = max(per_degradation) - min(per_degradation)`
 
 ## Evaluate Pretrained NeMo Conformer-CTC
 
@@ -170,13 +182,46 @@ python3 scripts/eval_attack_nemo_encoder_char_ctc.py \
 ## Compare Wav and Mel Results
 
 After running the Mel evaluation, summarize both repositories' outputs with the
-same WER/CER implementation:
+same phonemizer PER implementation:
 
 ```bash
 python3 scripts/summarize_wave_mel_results.py \
   --wave-jsonl ../ReliableAI_team_project/data/attack_results/all_results.jsonl \
   --mel-csv runs/conformer_ctc/pgd5_eval.csv \
   --output-json runs/conformer_ctc/wave_mel_summary.json
+```
+
+## Run Controlled 600M Phoneme Experiment
+
+The end-to-end orchestrator keeps the ReliableAI file structure while using PER
+as the primary fairness metric:
+
+```bash
+python3 scripts/run_phoneme_pgd_experiment.py \
+  --pretrained-model stt_multilingual_fastconformer_hybrid_large_pc \
+  --device cuda
+```
+
+By default this freezes the multilingual FastConformer encoder, fine-tunes
+language-specific bottleneck adapters, and trains one shared subword CTC head for
+the single `ko/en/zh/ru` model. This is the controlled path for comparison with
+the Wav MMS baseline.
+
+Default outputs:
+
+- `data/attack_results/all_results.jsonl`
+- `runs/ctc_conformer_600m_phoneme/experiment_plan.json`
+- `runs/ctc_conformer_600m_phoneme/pgd5_eval.csv`
+- `runs/ctc_conformer_600m_phoneme/wave_mel_summary.json`
+
+If the shared subword CTC head has already been fine-tuned, reuse it with:
+
+```bash
+python3 scripts/run_phoneme_pgd_experiment.py \
+  --mel-mode nemo-encoder-checkpoint \
+  --checkpoint runs/nemo_encoder_subword_ctc/checkpoint.pt \
+  --vocab runs/nemo_encoder_subword_ctc/vocab.json \
+  --device cuda
 ```
 
 ## Notes

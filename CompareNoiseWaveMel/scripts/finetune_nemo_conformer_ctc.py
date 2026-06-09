@@ -34,7 +34,7 @@ class NemoSpeechManifestDataset(Dataset):
         if sample_rate != TARGET_SAMPLE_RATE:
             waveform = torchaudio.functional.resample(waveform, sample_rate, TARGET_SAMPLE_RATE)
         waveform = waveform.clamp(-1.0, 1.0)
-        tokens = self.model.encode_text(item["text"])
+        tokens = self.model.encode_text(item["text"], item["language"])
         return {
             "waveform": waveform,
             "waveform_length": torch.tensor(waveform.numel(), dtype=torch.long),
@@ -107,8 +107,8 @@ def validate(model, loader, device):
         losses.append(loss.item())
         log_probs, output_lengths = model(batch["waveform"], batch["waveform_length"])
         hyps = model.decode_log_probs(log_probs, output_lengths)
-        for ref, hyp in zip(batch["text"], hyps):
-            rows.append({"wer": wer(ref, hyp), "cer": cer(ref, hyp)})
+        for ref, hyp, language in zip(batch["text"], hyps, batch["language"]):
+            rows.append({"wer": wer(ref, hyp, language), "cer": cer(ref, hyp)})
 
     return {
         "loss": sum(losses) / max(len(losses), 1),

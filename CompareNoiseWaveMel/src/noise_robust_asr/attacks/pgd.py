@@ -3,7 +3,14 @@ import torch.nn.functional as F
 
 
 def ctc_loss_from_batch(model, batch: dict, blank_id: int) -> torch.Tensor:
-    logits, output_lengths = model(batch["waveform"], batch["waveform_length"])
+    kwargs = {}
+    if "language" in batch:
+        kwargs["language"] = batch["language"]
+    logits, output_lengths = model(
+        batch["waveform"],
+        batch["waveform_length"],
+        **kwargs,
+    )
     log_probs = F.log_softmax(logits, dim=-1).transpose(0, 1)
     return F.ctc_loss(
         log_probs,

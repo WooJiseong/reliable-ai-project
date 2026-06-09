@@ -1,16 +1,37 @@
 import os
 import json
+import io
 import torch
+import torchaudio
 from tqdm import tqdm
-from datasets import load_from_disk
+from datasets import Audio, load_from_disk
 from transformers import AutoProcessor
 from src.attack import AudioPGDAttacker
+
+TARGET_SAMPLE_RATE = 16000
+
+
+def load_waveform(audio):
+    if audio.get("bytes") is not None:
+        waveform, sample_rate = torchaudio.load(io.BytesIO(audio["bytes"]))
+    elif audio.get("path"):
+        waveform, sample_rate = torchaudio.load(audio["path"])
+    else:
+        raise ValueError("Audio sample has neither embedded bytes nor a path.")
+
+    if waveform.ndim == 2:
+        waveform = waveform.mean(dim=0)
+    if sample_rate != TARGET_SAMPLE_RATE:
+        waveform = torchaudio.functional.resample(waveform, sample_rate, TARGET_SAMPLE_RATE)
+    return waveform.flatten().clamp(-1.0, 1.0).numpy()
+
 
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
     print("📦 Loading dataset and base models...")
     dataset = load_from_disk("./data/waveform")
+    dataset = dataset.cast_column("audio", Audio(decode=False))
     processor = AutoProcessor.from_pretrained("facebook/mms-1b-all")
     attacker = AudioPGDAttacker(device=device)
 
@@ -33,10 +54,14 @@ def main():
             attacker.model.load_adapter(mms_code)
             processor.tokenizer.set_target_lang(mms_code)
             
-            lang_samples = [s for s in dataset if s['lang_tag'] == lang_tag]
+            lang_indices = [
+                index for index, sample_lang in enumerate(dataset["lang_tag"])
+                if sample_lang == lang_tag
+            ]
             
-            for sample in tqdm(lang_samples, desc=f"Attacking {lang_tag.upper()}"):
-                input_waveform = sample['audio']['array']
+            for sample_index in tqdm(lang_indices, desc=f"Attacking {lang_tag.upper()}"):
+                sample = dataset[sample_index]
+                input_waveform = load_waveform(sample["audio"])
                 ground_truth = sample['raw_transcription'] 
                 labels = processor(text=ground_truth).input_ids
                 

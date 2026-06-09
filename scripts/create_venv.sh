@@ -1,10 +1,19 @@
 #!/usr/bin/env bash
+#SBATCH --time=01:00:00
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16G
+
 set -euo pipefail
 
 BACKEND="${1:-cpu}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 VENV_DIR="${VENV_DIR:-.venv}"
 TORCH_VERSION="${TORCH_VERSION:-2.7.1}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+cd "${REPO_ROOT}"
 
 case "${BACKEND}" in
   cpu)
@@ -18,6 +27,7 @@ case "${BACKEND}" in
     ;;
   *)
     echo "Usage: bash scripts/create_venv.sh [cpu|cu121|cu128]" >&2
+    echo "   or: sbatch scripts/create_venv.sh [cpu|cu121|cu128]" >&2
     exit 2
     ;;
 esac

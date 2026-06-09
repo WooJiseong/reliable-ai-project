@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from noise_robust_asr.data import SpeechManifestDataset, collate_batch, read_manifest
 from noise_robust_asr.metrics import cer, wer
 from noise_robust_asr.models.conformer_ctc import build_conformer_ctc, conformer_ctc_checkpoint_state
-from noise_robust_asr.text import CharTokenizer
+from noise_robust_asr.text import build_tokenizer
 
 
 def parse_args():
@@ -28,6 +28,9 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--tokenizer", choices=["subword", "char"], default="subword")
+    parser.add_argument("--tokenizer-vocab-size", type=int, default=2048)
+    parser.add_argument("--tokenizer-character-coverage", type=float, default=0.995)
     return parser.parse_args()
 
 
@@ -46,8 +49,8 @@ def validate(model, loader, tokenizer, device):
         batch = move_batch(batch, device)
         logits, _ = model(batch["waveform"], batch["waveform_length"])
         hyps = tokenizer.ctc_decode(logits)
-        for ref, hyp in zip(batch["text"], hyps):
-            rows.append({"wer": wer(ref, hyp), "cer": cer(ref, hyp)})
+        for ref, hyp, language in zip(batch["text"], hyps, batch["language"]):
+            rows.append({"wer": wer(ref, hyp, language), "cer": cer(ref, hyp)})
     return {
         "wer": sum(row["wer"] for row in rows) / max(len(rows), 1),
         "cer": sum(row["cer"] for row in rows) / max(len(rows), 1),
@@ -60,7 +63,13 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     train_items = read_manifest(args.train_manifest)
-    tokenizer = CharTokenizer.build([item["text"] for item in train_items])
+    tokenizer = build_tokenizer(
+        [item["text"] for item in train_items],
+        output_dir=output_dir,
+        tokenizer_type=args.tokenizer,
+        vocab_size=args.tokenizer_vocab_size,
+        character_coverage=args.tokenizer_character_coverage,
+    )
     tokenizer.save(output_dir / "vocab.json")
 
     train_dataset = SpeechManifestDataset(args.train_manifest, tokenizer)

@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import argparse
+import io
 import json
 import re
 import sys
@@ -40,9 +41,9 @@ def parse_args():
     )
     parser.add_argument("--languages", nargs="+", default=LANGUAGES, choices=LANGUAGES)
     parser.add_argument("--samples-per-lang", type=int, default=1000)
-    parser.add_argument("--train-per-lang", type=int, default=800)
-    parser.add_argument("--valid-per-lang", type=int, default=100)
-    parser.add_argument("--test-per-lang", type=int, default=100)
+    parser.add_argument("--train-per-lang", type=int, default=0)
+    parser.add_argument("--valid-per-lang", type=int, default=0)
+    parser.add_argument("--test-per-lang", type=int, default=1000)
     parser.add_argument(
         "--overwrite-audio",
         action="store_true",
@@ -59,11 +60,21 @@ def safe_text_id(text: str) -> str:
 
 def as_mono_waveform(audio: dict):
     import torch
+    import torchaudio
 
-    waveform = torch.as_tensor(audio["array"], dtype=torch.float32)
+    if "array" in audio:
+        waveform = torch.as_tensor(audio["array"], dtype=torch.float32)
+        sample_rate = int(audio["sampling_rate"])
+    elif audio.get("bytes") is not None:
+        waveform, sample_rate = torchaudio.load(io.BytesIO(audio["bytes"]))
+    elif audio.get("path"):
+        waveform, sample_rate = torchaudio.load(audio["path"])
+    else:
+        raise ValueError("Audio sample has neither decoded array, embedded bytes, nor a path.")
+
     if waveform.ndim == 2:
         waveform = waveform.mean(dim=0)
-    return waveform.flatten().clamp(-1.0, 1.0)
+    return waveform.flatten().clamp(-1.0, 1.0), int(sample_rate)
 
 
 def write_jsonl(path: Path, rows):
@@ -75,7 +86,7 @@ def write_jsonl(path: Path, rows):
 def main():
     args = parse_args()
     import torchaudio
-    from datasets import load_from_disk
+    from datasets import Audio, load_from_disk
     from tqdm import tqdm
 
     dataset_dir = Path(args.dataset_dir).resolve()
@@ -99,6 +110,7 @@ def main():
     missing = required - set(dataset.column_names)
     if missing:
         raise ValueError(f"{dataset_dir} missing dataset columns: {sorted(missing)}")
+    dataset = dataset.cast_column("audio", Audio(decode=False))
 
     grouped = {language: [] for language in args.languages}
     for dataset_index, sample in enumerate(dataset):
@@ -134,8 +146,7 @@ def main():
             tqdm(grouped[language], desc=f"export {language}")
         ):
             audio = sample["audio"]
-            waveform = as_mono_waveform(audio)
-            sample_rate = int(audio["sampling_rate"])
+            waveform, sample_rate = as_mono_waveform(audio)
             if sample_rate != TARGET_SAMPLE_RATE:
                 waveform = torchaudio.functional.resample(
                     waveform, sample_rate, TARGET_SAMPLE_RATE
